@@ -61,6 +61,20 @@ int main() {
     fail |= t.testAndLog<RegexLexer>();
 
     t = LexerTestCase::create(
+        "(a|b|c)",
+        "abc",
+        "a", "b", "c"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "(a|b|c)*",
+        "abc",
+        "abc", ""
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
         "a*",
         "a",
         "a", ""
@@ -133,14 +147,98 @@ int main() {
     t = LexerTestCase::create(
         "aa|(a|b)*",
         "ababaa",
-        "abab", "aa", ""
+        "ababaa", ""
     );
     fail |= t.testAndLog<RegexLexer>();
 
     t = LexerTestCase::create(
         "(a|b)*|aa",
         "ababaa",
-        "abab", "a", "a", ""
+        "ababaa", ""
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "(ab)*|aa",
+        "ababaa",
+        "abab", "", "", ""
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "^a",
+        "aa",
+        "a"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "^a|a",
+        "aa",
+        "a", "a"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "^a|ba",
+        "aba",
+        "a", "ba"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "(^a)|ba",
+        "aba",
+        "a", "ba"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "^(a)|ba",
+        "aba",
+        "a", "ba"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "^(a)",
+        "a\na",
+        "a", "a"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "^(a)$",
+        "a\na",
+        "a", "a"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "(^(a)$\n^)|b",
+        "a\na\nb",
+        "a\n", "a\n", "b"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "\\^",
+        "^",
+        "^"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "^\\^",
+        "^^",
+        "^"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "\\(a(ab)",
+        "aab(aab (aab",
+        "(aab", "(aab"
     );
     fail |= t.testAndLog<RegexLexer>();
 

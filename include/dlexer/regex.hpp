@@ -19,6 +19,9 @@ struct GroupNode;
 struct OrNode;
 struct StarNode;
 struct EndNode;
+struct AtStartNode;
+struct AtEndNode;
+struct RangeNode;
 
 using Children_t = std::vector<Node*>;
 
@@ -30,12 +33,14 @@ enum UnitUsage_t {
 
 struct Node {
     Children_t children;
-    int presedence;
     UnitUsage_t usage;
+    int pres;
+    bool skipSpecials;
 
-    Node(int pres, UnitUsage_t usage)
-        : presedence(pres)
+    Node(bool skip, UnitUsage_t usage, int pres)
+        : skipSpecials(skip)
         , usage(usage)
+        , pres(pres)
         {}
     virtual ~Node() {}
     virtual int satisfies(RegexData& data) const = 0;
@@ -56,11 +61,16 @@ struct INodeVisitor {
     virtual void visit(OrNode& node) {}
     virtual void visit(StarNode& node) {}
     virtual void visit(EndNode& node) {}
+    virtual void visit(AtStartNode& node) {}
+    virtual void visit(AtEndNode& node) {}
+    virtual void visit(RangeNode& node) {}
 };
 
 template<typename Derived>
 struct NodeCRTP: Node {
-    NodeCRTP(): Node(Derived::Presedence, Derived::UnitUsage) {}
+    NodeCRTP(): Node(Derived::SkipSpecials, Derived::UnitUsage, Derived::Presedence) {}
+    NodeCRTP(bool skip, UnitUsage_t usage): Node(skip, usage, Derived::Presedence) {}
+    NodeCRTP(bool skip): NodeCRTP(skip, Derived::UnitUsage) {}
 
     void acceptVisitor(dtl::INodeVisitor& visitor) override {
         Derived& castedSelf = *static_cast<Derived*>(this);
@@ -70,6 +80,7 @@ struct NodeCRTP: Node {
 
 struct UnitNode: NodeCRTP<UnitNode> {
     static const int Presedence = 1;
+    static const bool SkipSpecials = false;
     static const UnitUsage_t UnitUsage = UnitUsage_t::Consume;
     char unit[4];
     int ulen;
@@ -82,6 +93,7 @@ struct UnitNode: NodeCRTP<UnitNode> {
 
 struct StartNode: NodeCRTP<StartNode> {
     static const int Presedence = 6;
+    static const bool SkipSpecials = false;
     static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
 
     int satisfies(RegexData& data) const override;
@@ -89,30 +101,41 @@ struct StartNode: NodeCRTP<StartNode> {
 };
 
 struct GroupNode: NodeCRTP<GroupNode> {
-    static const int Presedence = 1;
+    static const int Presedence = 2;
+    static const int PairedPresedence = 1;
+    static const bool SkipSpecials = true;
     static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
     int groupId;
     // != nullptr only if it's a start node, otherwise == nullptr
     GroupNode* paired;
 
-    GroupNode(int id, GroupNode* paired);
+    GroupNode(int id, GroupNode* paired, bool isEnd);
+
+    bool isEnd() const;
 
     int satisfies(RegexData& data) const override;
     void adaptChild(Children_t& stack, Node& node, int at) override;
+
+    void lowerPresedence();
 };
 
 struct OrNode: NodeCRTP<OrNode> {
-    static const int Presedence = 5;
+    static const int Presedence = 2;
+    static const bool SkipSpecials = true;
     static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
 
     OrNode();
 
     int satisfies(RegexData& data) const override;
     void adaptChild(Children_t& stack, Node& node, int at) override;
+
+private:
+    static void adaptEndGroupNode(GroupNode& node, Node& curParent, std::vector<Node*>& visited);
 };
 
 struct StarNode: NodeCRTP<StarNode> {
     static const int Presedence = 1;
+    static const bool SkipSpecials = false;
     static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
 
     StarNode();
@@ -123,9 +146,46 @@ struct StarNode: NodeCRTP<StarNode> {
 
 struct EndNode: NodeCRTP<EndNode> {
     static const int Presedence = 1;
+    static const bool SkipSpecials = false;
     static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
 
     EndNode();
+
+    int satisfies(RegexData& data) const override;
+    void adaptChild(Children_t& stack, Node& node, int at) override;
+};
+
+struct AtStartNode: NodeCRTP<AtStartNode> {
+    static const int Presedence = 1;
+    static const bool SkipSpecials = false;
+    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+
+    AtStartNode();
+
+    int satisfies(RegexData& data) const override;
+    void adaptChild(Children_t& stack, Node& node, int at) override;
+};
+
+struct AtEndNode: NodeCRTP<AtEndNode> {
+    static const int Presedence = 1;
+    static const bool SkipSpecials = false;
+    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+
+    AtEndNode();
+
+    int satisfies(RegexData& data) const override;
+    void adaptChild(Children_t& stack, Node& node, int at) override;
+};
+
+struct RangeNode: NodeCRTP<RangeNode> {
+    static const int Presedence = 1;
+    static const bool SkipSpecials = false;
+    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+
+    unsigned char start[4];
+    unsigned char end[4];
+
+    RangeNode(const char* start, const char* end);
 
     int satisfies(RegexData& data) const override;
     void adaptChild(Children_t& stack, Node& node, int at) override;
@@ -156,6 +216,9 @@ struct RegexData {
     // returns number of bytes of reverted unit
     int returnUnit();
     void updateAt();
+
+    // WARNING: doesn't check for eof
+    bool isCurOrNextNewLine() const;
 };
 
 class RegexLexer {
@@ -181,12 +244,6 @@ private:
     std::string istreamString;
 
     void extractStringFromIstream(std::istream& s);
-
-    std::string* encodeAlpha(dtl::Children_t& stack, const char* unit, int ulen);
-    std::string* encodeNonAlpha(dtl::Children_t& stack, char unit);
-    std::string* encodeOr(dtl::Children_t& stack);
-    std::string* encodeStartCaptureGroup(dtl::Children_t& stack);
-    std::string* encodeEndCaptureGroup(dtl::Children_t& stack);
 
     void parsePattern(const std::string& pat);
 
