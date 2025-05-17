@@ -1,0 +1,4 @@
+.cache/
+build/
+plan.txt
+compile_commands.json
