@@ -38,11 +38,12 @@ struct NameVisitor: INodeVisitor {
     void visit(StartNode& _) override { name = "StartNode"; }
     void visit(GroupNode& _) override { name = "GroupNode"; }
     void visit(OrNode& _) override { name = "OrNode"; }
-    void visit(StarNode& _) override { name = "StarNode"; }
+    void visit(RepeatNode& _) override { name = "RepeatNode"; }
     void visit(EndNode& _) override { name = "EndNode"; }
     void visit(AtStartNode& _) override { name = "AtStartNode"; }
     void visit(AtEndNode& _) override { name = "AtEndNode"; }
     void visit(RangeNode& _) override { name = "RangeNode"; }
+    void visit(FailNode& _) override { name = "FailNode"; }
 
     static const char* get(Node& n) {
         NameVisitor v;
@@ -109,18 +110,135 @@ static void print(Node* n, int d, std::vector<Node*> traversed) {
 
 int findLastSuperiorTo(dtl::Node& node, const dtl::Children_t& stack);
 
+void RegexLexer::appendNode(dtl::Children_t& stack, dtl::Node* newNode) {
+    const int supAdapterAt = findLastSuperiorTo(*newNode, stack);
+    Node& supAdapter = *stack[supAdapterAt];
+    Node& curAdapter = *stack.back();
+
+    if(&supAdapter == &curAdapter) {
+        curAdapter.adaptChild(stack, *newNode, stack.size());
+    } else {
+        Node* endNode = createNode<EndNode>();
+        {
+            const size_t oldStackSize = stack.size();
+            curAdapter.adaptChild(stack, *endNode, stack.size());
+            assert(oldStackSize + 1 == stack.size() && "end node must only append to stack");
+        }
+        supAdapter.adaptChild(stack, *newNode, supAdapterAt + 1);
+    }
+}
+
+void RegexLexer::appendOrGroupNode(dtl::Children_t& stack, std::vector<dtl::Node*> orGroup, bool isExclusive) {
+    const int gid = groups.size();
+    groups.push_back({});
+    GroupNode* groupStart = static_cast<GroupNode*>(
+            createNode<GroupNode>(gid, nullptr, false, false));
+    GroupNode* groupEnd = static_cast<GroupNode*>(
+        createNode<GroupNode>(gid, groupStart, true, false));
+    groupStart->paired = groupEnd;
+
+    Node* ornode = createNode<OrNode>(isExclusive);
+
+    appendNode(stack, groupStart);
+    appendNode(stack, ornode);
+
+    static const int toPopCount = 2;
+    for(Node* orchild: orGroup) {
+        appendNode(stack, orchild);
+
+        if(isExclusive) { appendNode(stack, createNode<FailNode>());
+        } else { appendNode(stack, createNode<EndNode>()); }
+
+        stack.resize(stack.size() - toPopCount);
+    }
+
+    if(isExclusive) {
+        // inserting path of escape for succesful "not matching anything"
+        // it'll be replaced with groupEnd during successive appendNode()
+        appendNode(stack, createNode<EndNode>());
+        stack.pop_back();
+    }
+
+    appendNode(stack, groupEnd);
+}
+
+void RegexLexer::adaptOrGroupSymbol(std::vector<dtl::Node*>& stack, std::vector<dtl::Node*>& group, OrGroupMode_t& mode, bool& isRangePending, const char* unit, int ulen, bool& isEscaped) {
+    assert(mode != OrGroupMode_t::OUTSIDE);
+
+    if(isRangePending) {
+        RangeNode* range = static_cast<RangeNode*>(group.back());
+        std::memcpy(range->end, unit, sizeof(range->end));
+        range->endlen = ulen;
+        isRangePending = false;
+
+        assert(range->startlen == range->endlen);
+        return;
+    }
+
+    if(!isEscaped && ulen == 1) {
+        if(unit[0] == '^' && group.size() == 0) {
+            mode = OrGroupMode_t::INSIDE_EXC;
+            return;
+        }
+
+        if(unit[0] == '-' && group.size() != 0) {
+            assert(isNode<UnitNode>(*group.back()));
+            char unitBuf[4];
+            int unitBufLen;
+            {
+                UnitNode* unit = static_cast<UnitNode*>(group.back());
+                std::memcpy(unitBuf, unit->unit, sizeof(unitBuf));
+                unitBufLen = unit->ulen;
+                this->nodes.pop_back(); // destroying unit node automatically
+            }
+
+            Node* range = createNode<RangeNode>(unitBuf, unitBufLen);
+            group.back() = range;
+            isRangePending = true;
+
+            return;
+        }
+
+        if(unit[0] == ']') {
+            appendOrGroupNode(
+                stack, group, mode == OrGroupMode_t::INSIDE_EXC);
+            mode = OUTSIDE;
+            group.clear();
+            return;
+        }
+
+        if(unit[0] == '\\') {
+            isEscaped = true;
+            return;
+        }
+    }
+
+    group.push_back(createNode<UnitNode>(unit, ulen));
+    isEscaped = false;
+}
+
 void RegexLexer::parsePattern(const std::string& pat) {
     std::vector<GroupNode*> groupStartStack;
+    std::vector<Node*> orGroup;
+    bool isRangePending = false;
+
     Children_t stack { nodes[0].get() };
     int ulen = 0;
     char unit[4];
     int unmatchedGroupId = -1;
     bool isEscaped = false;
+    OrGroupMode_t orGroupMode = OrGroupMode_t::OUTSIDE;
     
     for(int byteInd = 0; byteInd < pat.size(); byteInd += ulen) {
         ulen = extractUnitStr(unit, pat.c_str() + byteInd);
 
         Node* newNode = nullptr;
+
+        if(orGroupMode != OUTSIDE) {
+            adaptOrGroupSymbol(stack, orGroup, orGroupMode, isRangePending, unit, ulen, isEscaped);
+            continue;
+        }
+
         if(ulen > 1) { newNode = createNode<UnitNode>(unit, ulen); }
         else if(isEscaped) { 
             newNode = createNode<UnitNode>(unit, ulen); 
@@ -140,33 +258,22 @@ void RegexLexer::parsePattern(const std::string& pat) {
             newNode = createNode<GroupNode>(start->groupId, start, true);
             start->paired = static_cast<GroupNode*>(newNode);
         } break;
-        case '*': newNode = createNode<StarNode>(); break;
+        case '*': newNode = createNode<RepeatNode>(false); break;
+        case '+': newNode = createNode<RepeatNode>(true); break;
         case '^': newNode = createNode<AtStartNode>(); break;
         case '$': newNode = createNode<AtEndNode>(); break;
+        case '[': orGroupMode = OrGroupMode_t::INSIDE; continue;
+        case ']': assert(false && "']' must be handled not here");
         case '\\': isEscaped = true; continue;
         default: newNode = createNode<UnitNode>(unit, ulen); break;
         } // else switch
 
-        const int supAdapterAt = findLastSuperiorTo(*newNode, stack);
-        Node& supAdapter = *stack[supAdapterAt];
-        Node& curAdapter = *stack.back();
-
-        if(&supAdapter == &curAdapter) {
-            curAdapter.adaptChild(stack, *newNode, stack.size());
-        } else {
-            Node* endNode = createNode<EndNode>();
-            {
-                const size_t oldStackSize = stack.size();
-                curAdapter.adaptChild(stack, *endNode, stack.size());
-                assert(oldStackSize + 1 == stack.size() && "end node must only append to stack");
-            }
-            supAdapter.adaptChild(stack, *newNode, supAdapterAt + 1);
-        }
+        appendNode(stack, newNode);
     }
 
     stack.back()->adaptChild(stack, *createNode<EndNode>(), stack.size());
 
-#if 0
+#if 1
     std::cerr << "START: " << pat << '\n';
     std::vector<Node*> tr;
     print(nodes[0].get(), 0, tr);
@@ -292,6 +399,7 @@ bool RegexLexer::getToken(std::string& out, RegexData& data) const {
     return false;
 }
 
+
 int findLastSuperiorTo(dtl::Node& node, const dtl::Children_t& stack) {
     int i = stack.size() - 1;
     IsSpecialVisitor checker;
@@ -362,7 +470,7 @@ void UnitNode::adaptChild(Children_t &stack, Node &node, int at) {
     // assuming that unit node has lowest pres
     assert(at == stack.size() && "child of unit node must be only appended");
 
-    if(isNode<StarNode>(node)) {
+    if(isNode<RepeatNode>(node)) {
         insertBetween(stack, node, stack.size() - 1);
         this->children.push_back(&node);
 
@@ -373,10 +481,29 @@ void UnitNode::adaptChild(Children_t &stack, Node &node, int at) {
     }
 }
 
-OrNode::OrNode() {}
+OrNode::OrNode(bool neg)
+    : NodeCRTP(
+        true,
+        neg ? UnitUsage_t::Consume : OrNode::UnitUsage
+    ), isNegative(neg) {}
+
+OrNode::OrNode(): OrNode(false) {}
 
 int OrNode::satisfies(RegexData& data) const {
-    return 0;
+    if(!isNegative) { 
+        assert(usage == OrNode::UnitUsage);
+        return 0; 
+    }
+    assert(usage == UnitUsage_t::Consume);
+    assert(children.size() > 1);
+
+    for(int i = 0; i < children.size() - 1; ++i) {
+        if(children[i]->satisfies(data) != -1) { 
+            return -1; 
+        }
+    }
+
+    return children.size() - 1;
 }
 
 void OrNode::adaptEndGroupNode(GroupNode& node, Node& curParent, std::vector<Node*>& visit) {
@@ -389,7 +516,6 @@ void OrNode::adaptEndGroupNode(GroupNode& node, Node& curParent, std::vector<Nod
     Node& back = *curParent.children.back();
 
     if(auto backEnd = isNode<EndNode>(back); backEnd) {
-        assert(curParent.children.size() == 1);
         curParent.children.back() = &node;
         return;
     }
@@ -405,6 +531,7 @@ void OrNode::adaptChild(Children_t &stack, Node &node, int at) {
     if(gnode != nullptr && gnode->isEnd()) {
         std::vector<Node*> visit;
         adaptEndGroupNode(*gnode, *this, visit);
+        gnode->lowerPresedence();
         stack.push_back(&node);
         return;
     }
@@ -419,7 +546,13 @@ void OrNode::adaptChild(Children_t &stack, Node &node, int at) {
     this->children.push_back(&node);
 }
 
-GroupNode::GroupNode(int id, GroupNode* p, bool isEnd): groupId(id), paired(p), NodeCRTP(isEnd) {}
+GroupNode::GroupNode(int id, GroupNode* p, bool isEnd, bool capture)
+    : groupId(id)
+    , paired(p)
+    , capture(capture)
+    , NodeCRTP(isEnd) {}
+
+GroupNode::GroupNode(int id, GroupNode* p, bool isEnd): GroupNode(id, p, isEnd, true) {}
 
 bool GroupNode::isEnd() const { return skipSpecials; }
 int GroupNode::satisfies(RegexData& data) const { return 0; }
@@ -434,7 +567,7 @@ void GroupNode::adaptChild(Children_t &stack, Node &node, int at) {
     const GroupNode* gnode = isNode<GroupNode>(node);
     const bool isNodeEnd = gnode != nullptr && gnode->isEnd();
 
-    if(isNode<StarNode>(node)) {
+    if(isNode<RepeatNode>(node)) {
         int startAt = stack.size() - 2;
         assert(at == stack.size() && "star node must be appended at stack end");
             /*
@@ -487,11 +620,11 @@ void StartNode::adaptChild(Children_t &stack, Node &node, int at) {
     }
 }
 
-StarNode::StarNode() {}
+RepeatNode::RepeatNode(bool atLeastOne): atLeastOne(atLeastOne) {}
 
-int StarNode::satisfies(RegexData& data) const { return 0; }
+int RepeatNode::satisfies(RegexData& data) const { return 0; }
 
-void StarNode::adaptChild(Children_t &stack, Node &node, int at) {
+void RepeatNode::adaptChild(Children_t &stack, Node &node, int at) {
     Node& firstChild = *this->children.back();
     Node* subAdapter = &firstChild;
 
@@ -500,7 +633,7 @@ void StarNode::adaptChild(Children_t &stack, Node &node, int at) {
             static_cast<GroupNode&>(firstChild).paired);
     }
     
-    this->children.push_back(&node);
+    if(!atLeastOne) { this->children.push_back(&node); }
     subAdapter->children.push_back(&node);
     stack.push_back(&node);
 }
@@ -550,20 +683,32 @@ void AtEndNode::adaptChild(Children_t &stack, Node &node, int at) {
     this->children.push_back(&node);
 }
 
-RangeNode::RangeNode(const char* start, const char* end) {}
+RangeNode::RangeNode() {}
+
+RangeNode::RangeNode(const char* start, int startlen): startlen(startlen) {
+    std::memcpy(this->start, start, sizeof(this->start));
+}
+
+RangeNode::RangeNode(const char* start, const char* end, int startlen, int endlen): startlen(startlen), endlen(endlen) {
+    assert(startlen == endlen);
+
+    std::memcpy(this->start, start, sizeof(this->start));
+    std::memcpy(this->end, end, sizeof(this->end));
+}
 
 int RangeNode::satisfies(RegexData& data) const {
-    for(int i = 0; i < sizeof(start); ++i) {
-        const unsigned char cur = data.unit[i];
-        if(cur < start[i] || cur > end[i]) { return -1; }
-    }
+    assert(startlen == endlen);
+
+    if(data.ulen != startlen
+    || std::memcmp(start, data.unit, startlen) > 0
+    || std::memcmp(end, data.unit, startlen) < 0) { return -1; }
     return 0;
 }
 
 void RangeNode::adaptChild(Children_t &stack, Node &node, int at) {
     assert(at == stack.size() && "child of RangeNode must be only appended");
 
-    if(isNode<StarNode>(node)) {
+    if(isNode<RepeatNode>(node)) {
         insertBetween(stack, node, stack.size() - 1);
         this->children.push_back(&node);
 
@@ -572,6 +717,19 @@ void RangeNode::adaptChild(Children_t &stack, Node &node, int at) {
         stack.push_back(&node);
         this->children.push_back(&node);
     }
+}
+
+FailNode::FailNode() {}
+
+int FailNode::satisfies(RegexData& data) const { 
+    return -1;
+}
+
+void FailNode::adaptChild(Children_t &stack, Node &node, int at) {
+    assert(at == stack.size() && "FailNode's child must be appended");
+
+    stack.push_back(&node);
+    this->children.push_back(&node);
 }
 
 } // namespace dlexer

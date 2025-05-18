@@ -17,11 +17,13 @@ struct UnitNode;
 struct StartNode;
 struct GroupNode;
 struct OrNode;
-struct StarNode;
+struct RepeatNode;
 struct EndNode;
 struct AtStartNode;
 struct AtEndNode;
 struct RangeNode;
+struct FailNode;
+struct OrGroupNode;
 
 using Children_t = std::vector<Node*>;
 
@@ -59,11 +61,12 @@ struct INodeVisitor {
     virtual void visit(StartNode& node) {}
     virtual void visit(GroupNode& node) {}
     virtual void visit(OrNode& node) {}
-    virtual void visit(StarNode& node) {}
+    virtual void visit(RepeatNode& node) {}
     virtual void visit(EndNode& node) {}
     virtual void visit(AtStartNode& node) {}
     virtual void visit(AtEndNode& node) {}
     virtual void visit(RangeNode& node) {}
+    virtual void visit(FailNode& node) {}
 };
 
 template<typename Derived>
@@ -105,10 +108,11 @@ struct GroupNode: NodeCRTP<GroupNode> {
     static const int PairedPresedence = 1;
     static const bool SkipSpecials = true;
     static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
-    int groupId;
-    // != nullptr only if it's a start node, otherwise == nullptr
     GroupNode* paired;
+    int groupId;
+    bool capture;
 
+    GroupNode(int id, GroupNode* paired, bool isEnd, bool capture);
     GroupNode(int id, GroupNode* paired, bool isEnd);
 
     bool isEnd() const;
@@ -124,6 +128,12 @@ struct OrNode: NodeCRTP<OrNode> {
     static const bool SkipSpecials = true;
     static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
 
+    // If true, becomes consuming;
+    // If true, checks that every child except the last one is not satisfied;
+    //      If so, returns index of the last child; otherwise, returns -1.
+    bool isNegative;
+
+    OrNode(bool neg);
     OrNode();
 
     int satisfies(RegexData& data) const override;
@@ -133,12 +143,14 @@ private:
     static void adaptEndGroupNode(GroupNode& node, Node& curParent, std::vector<Node*>& visited);
 };
 
-struct StarNode: NodeCRTP<StarNode> {
+struct RepeatNode: NodeCRTP<RepeatNode> {
     static const int Presedence = 1;
     static const bool SkipSpecials = false;
     static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
 
-    StarNode();
+    bool atLeastOne;
+    
+    RepeatNode(bool atLeastOne);
 
     int satisfies(RegexData& data) const override;
     void adaptChild(Children_t& stack, Node& node, int at) override;
@@ -180,12 +192,27 @@ struct AtEndNode: NodeCRTP<AtEndNode> {
 struct RangeNode: NodeCRTP<RangeNode> {
     static const int Presedence = 1;
     static const bool SkipSpecials = false;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+    static const UnitUsage_t UnitUsage = UnitUsage_t::Consume;
 
+    int startlen;
+    int endlen;
     unsigned char start[4];
     unsigned char end[4];
 
-    RangeNode(const char* start, const char* end);
+    RangeNode();
+    RangeNode(const char* start, int startlen);
+    RangeNode(const char* start, const char* end, int startlen, int endlen);
+
+    int satisfies(RegexData& data) const override;
+    void adaptChild(Children_t& stack, Node& node, int at) override;
+};
+
+struct FailNode: NodeCRTP<FailNode> {
+    static const int Presedence = 1;
+    static const bool SkipSpecials = false;
+    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+
+    FailNode();
 
     int satisfies(RegexData& data) const override;
     void adaptChild(Children_t& stack, Node& node, int at) override;
@@ -194,6 +221,12 @@ struct RangeNode: NodeCRTP<RangeNode> {
 struct NodeMem {
     dtl::Node* node;
     int firstUnprocessedChild;
+};
+
+enum OrGroupMode_t {
+    OUTSIDE,
+    INSIDE,
+    INSIDE_EXC,
 };
 } // namespace dtl
 
@@ -246,6 +279,9 @@ private:
     void extractStringFromIstream(std::istream& s);
 
     void parsePattern(const std::string& pat);
+    void appendNode(dtl::Children_t& stack, dtl::Node* newNode);
+    void appendOrGroupNode(dtl::Children_t& stack, std::vector<dtl::Node*> orGroup, bool isExclusive);
+    void adaptOrGroupSymbol(std::vector<dtl::Node*>& stack, std::vector<dtl::Node*>& group, dtl::OrGroupMode_t& mode, bool& isRangePending, const char* unit, int ulen, bool& isEscaped);
 
     template<typename NodeType, typename... Args>
     dtl::Node* createNode(Args... args) {
