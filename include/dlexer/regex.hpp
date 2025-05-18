@@ -23,7 +23,6 @@ struct AtStartNode;
 struct AtEndNode;
 struct RangeNode;
 struct FailNode;
-struct OrGroupNode;
 
 using Children_t = std::vector<Node*>;
 
@@ -148,9 +147,14 @@ struct RepeatNode: NodeCRTP<RepeatNode> {
     static const bool SkipSpecials = false;
     static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
 
-    bool atLeastOne;
-    
-    RepeatNode(bool atLeastOne);
+    enum Mode {
+        ZERO_OR_MORE,
+        ZERO_OR_ONE,
+        ONE_OR_MORE,
+    } mode;
+    bool isLazy = false;
+
+    RepeatNode(Mode mode);
 
     int satisfies(RegexData& data) const override;
     void adaptChild(Children_t& stack, Node& node, int at) override;

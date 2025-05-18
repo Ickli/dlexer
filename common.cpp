@@ -54,6 +54,7 @@ int unitLengthLast(const char* last) {
     static const int check = (2 << (8*sizeof(char) - 2));
     while((*last & (3 << (8*sizeof(char) - 2))) == check) { last--; off++; }
 
+#if 0
     if(off > 0) { 
         char unit[5];
         std::memcpy(unit, last, off+1);
@@ -61,6 +62,7 @@ int unitLengthLast(const char* last) {
         std::cerr << "EXTRACTED: " << unit << '\n';
         std::cerr << (off+1) << '\n';
     }
+#endif
     return off + 1;
 }
 } // namespace dlexer

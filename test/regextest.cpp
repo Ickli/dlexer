@@ -103,6 +103,95 @@ int main() {
     fail |= t.testAndLog<RegexLexer>();
 
     t = LexerTestCase::create(
+        "a?",
+        "a ba baa",
+        "a", "", "", "a", "", "", "a", "a", ""
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "ba?",
+        "a ba baa",
+        "ba", "ba"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "ba?",
+        "a ba baa",
+        "ba", "ba"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "(ab)?",
+        "ab ba abbaa",
+        "ab", "", "", "", "", "ab", "", "", "", ""
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "(ab)??",
+        "aba",
+        "", "", "", ""
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "(ab)*?a",
+        "aba",
+        "a", "a"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "(ab)+?a",
+        "aba",
+        "aba"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "(ab)+?a",
+        "aba ababa",
+        "aba", "aba"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "[a-y]*?z",
+        "aba ababa"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "[a-y]*?z",
+        "aba ababaz",
+        "ababaz"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "[a-y]*?z",
+        "abaz ababaz",
+        "abaz", "ababaz"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "[а-ю]*?я",
+        "абв абвабв"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "[а-ю]*?я",
+        "абвя абвабвя",
+        "абвя", "абвабвя"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
         "a*",
         " ",
         "", ""
@@ -316,6 +405,27 @@ int main() {
         "[1-9]+|[a-z]+",
         "abc123ая",
         "abc", "123"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "//[a-z]*$",
+        "asdadasda //",
+        "//"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "//[a-z]*$",
+        "asdadasda //abc",
+        "//abc"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "//[a-z]*$",
+        "asdadasda //abc\nasd//def\n//ghi",
+        "//abc", "//def", "//ghi"
     );
     fail |= t.testAndLog<RegexLexer>();
 

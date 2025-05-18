@@ -229,6 +229,7 @@ void RegexLexer::parsePattern(const std::string& pat) {
     char unit[4];
     int unmatchedGroupId = -1;
     bool isEscaped = false;
+    int lastRepeatNodeAt = -1;
     OrGroupMode_t orGroupMode = OrGroupMode_t::OUTSIDE;
     
     for(int byteInd = 0; byteInd < pat.size(); byteInd += ulen) {
@@ -260,8 +261,24 @@ void RegexLexer::parsePattern(const std::string& pat) {
             newNode = createNode<GroupNode>(start->groupId, start, true);
             start->paired = static_cast<GroupNode*>(newNode);
         } break;
-        case '*': newNode = createNode<RepeatNode>(false); break;
-        case '+': newNode = createNode<RepeatNode>(true); break;
+        case '*': {
+            newNode = createNode<RepeatNode>(RepeatNode::ZERO_OR_MORE);
+            lastRepeatNodeAt = byteInd;
+        } break;
+        case '+': {
+            newNode = createNode<RepeatNode>(RepeatNode::ONE_OR_MORE);
+            lastRepeatNodeAt = byteInd;
+        } break;
+        case '?': {
+            assert(byteInd > 0);
+            if(lastRepeatNodeAt != byteInd - 1) {
+                newNode = createNode<RepeatNode>(RepeatNode::ZERO_OR_ONE);
+                lastRepeatNodeAt = byteInd;
+            } else {
+                static_cast<RepeatNode*>(stack.back())->isLazy = true;
+                continue;
+            }
+        } break;
         case '^': newNode = createNode<AtStartNode>(); break;
         case '$': newNode = createNode<AtEndNode>(); break;
         case '[': orGroupMode = OrGroupMode_t::INSIDE; continue;
@@ -275,7 +292,7 @@ void RegexLexer::parsePattern(const std::string& pat) {
 
     stack.back()->adaptChild(stack, *createNode<EndNode>(), stack.size());
 
-#if 1
+#if 0
     std::cerr << "START: " << pat << '\n';
     std::vector<Node*> tr;
     print(nodes[0].get(), 0, tr);
@@ -491,7 +508,6 @@ void UnitNode::adaptChild(Children_t &stack, Node &node, int at) {
 
     if(isNode<RepeatNode>(node)) {
         insertBetween(stack, node, stack.size() - 1);
-        this->children.push_back(&node);
 
         stack.back() = &node;
     } else {
@@ -589,12 +605,6 @@ void GroupNode::adaptChild(Children_t &stack, Node &node, int at) {
     if(isNode<RepeatNode>(node)) {
         int startAt = stack.size() - 2;
         assert(at == stack.size() && "star node must be appended at stack end");
-            /*
-            if(auto gcur = isNode<GroupNode>(cur);
-            gcur && gcur->groupId == this->groupId) {
-                break;
-            }
-            */
         assert(stack.size() >= 3 && "stack must contain start, group start and group end");
 
         for(;startAt >= 0; --startAt) {
@@ -606,7 +616,6 @@ void GroupNode::adaptChild(Children_t &stack, Node &node, int at) {
         assert(startAt > 0 && "group start node must be on the stack");
 
         insertBetween(stack, node, startAt); 
-        this->children.push_back(&node);
         stack.resize(startAt + 1);
         stack.back() = &node;
     } else if(isNodeEnd && stack.back() != this) { 
@@ -639,11 +648,13 @@ void StartNode::adaptChild(Children_t &stack, Node &node, int at) {
     }
 }
 
-RepeatNode::RepeatNode(bool atLeastOne): atLeastOne(atLeastOne) {}
+RepeatNode::RepeatNode(Mode mode): mode(mode) {}
 
 int RepeatNode::satisfies(RegexData& data) const { return 0; }
 
 void RepeatNode::adaptChild(Children_t &stack, Node &node, int at) {
+    assert(this->children.size() == 1);
+
     Node& firstChild = *this->children.back();
     Node* subAdapter = &firstChild;
 
@@ -651,9 +662,29 @@ void RepeatNode::adaptChild(Children_t &stack, Node &node, int at) {
         subAdapter = static_cast<Node*>(
             static_cast<GroupNode&>(firstChild).paired);
     }
-    
-    if(!atLeastOne) { this->children.push_back(&node); }
-    subAdapter->children.push_back(&node);
+
+    if(mode == ZERO_OR_ONE) {
+        if(isLazy) {
+            this->children.insert(this->children.begin(), &node);
+        } else {
+            this->children.push_back(&node);
+        }
+    } else if(mode == ZERO_OR_MORE) {
+        if(isLazy) {
+            this->children.insert(this->children.begin(), &node);
+        } else {
+            this->children.push_back(&node);
+        }
+        subAdapter->children.push_back(this); 
+    } else {
+        if(isLazy) {
+            // pass
+        } else {
+            subAdapter->children.push_back(this); 
+        }
+    }
+
+    subAdapter->children.push_back(&node); 
     stack.push_back(&node);
 }
 
@@ -729,7 +760,6 @@ void RangeNode::adaptChild(Children_t &stack, Node &node, int at) {
 
     if(isNode<RepeatNode>(node)) {
         insertBetween(stack, node, stack.size() - 1);
-        this->children.push_back(&node);
 
         stack.back() = &node;
     } else {
