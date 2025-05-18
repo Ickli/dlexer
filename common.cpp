@@ -51,8 +51,8 @@ int unitLength(char first) {
 
 int unitLengthLast(const char* last) {
     int off = 0;
-    static const int check = (3 << (8*sizeof(char) - 2));
-    while((*last & (2 << (8*sizeof(char) - 2))) == check) { last--; off++; }
+    static const int check = (2 << (8*sizeof(char) - 2));
+    while((*last & (3 << (8*sizeof(char) - 2))) == check) { last--; off++; }
 
     if(off > 0) { 
         char unit[5];

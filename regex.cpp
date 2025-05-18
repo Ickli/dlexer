@@ -6,6 +6,8 @@
 #include <cassert>
 #include <algorithm>
 
+//TODO: move tying a repeated unit to RepeatNode inside RepeatNode.adaptChild
+
 namespace dlexer {
 
 namespace dtl {
@@ -290,7 +292,7 @@ RegexLexer::RegexLexer(const std::string& pat) {
 //      a node with free children is found 
 //      or there's some string to parse yet
 // otherwise, returns false
-static bool popUntilFreeChildren(std::string& out, RegexData& data, bool hasLastUnitFetched) {
+static bool popUntilFreeChildren(RegexData& data, bool hasLastUnitFetched) {
     // TODO: look at the head of file 
     if(hasLastUnitFetched) { data.returnUnit(); }
 
@@ -300,8 +302,7 @@ static bool popUntilFreeChildren(std::string& out, RegexData& data, bool hasLast
             return true;
         }
         if(back.node->usage != UnitUsage_t::NoNeedInUnit) {
-            const int ulen = data.returnUnit();
-            out.erase(out.length() - ulen, ulen);
+            data.returnUnit();
         }
         data.stack.pop_back();
     }
@@ -313,7 +314,9 @@ static bool popUntilFreeChildren(std::string& out, RegexData& data, bool hasLast
 
     data.stack[0].firstUnprocessedChild = 0;
     // proceed by one unit if whole pattern was impossible
-    return data.extractUnit();
+    const bool res = data.extractUnit();
+    data.startPos += data.ulen;
+    return res;
 }
 
 void RegexLexer::extractStringFromIstream(std::istream& s) {
@@ -330,14 +333,15 @@ bool RegexLexer::getToken(std::string& out, std::istream& in) {
 }
 
 bool RegexLexer::getToken(std::string& out, const std::string& in) {
-    data.str = &in;
+    data.str = in.c_str();
+    data.strLen = in.length();
     return getToken(out, data);
 }
 
-bool RegexLexer::getToken(std::string& out, RegexData& data) const {
+bool RegexLexer::getToken(const char** start, const char** end, RegexData& data) const {
     if(data.at == RegexData::LINE_AT_PAST_EOF) { return false; }
 
-    out.clear();
+    data.startPos = data.pos;
     data.stack.clear();
 
     data.stack.push_back({nodes[0].get(), 0});
@@ -354,7 +358,7 @@ bool RegexLexer::getToken(std::string& out, RegexData& data) const {
             if(data.at == RegexData::LINE_AT_EOF || !(data.reuseUnit || data.extractUnit())) { 
                 curParent.firstUnprocessedChild += 1;
                 // false because eof and we haven't fetched anything
-                if(!popUntilFreeChildren(out, data, false)) {
+                if(!popUntilFreeChildren(data, false)) {
                     data.at = RegexData::LINE_AT_PAST_EOF;
                     return false;
                 }
@@ -368,7 +372,7 @@ bool RegexLexer::getToken(std::string& out, RegexData& data) const {
         // if not satisfied, revert
         if(next == -1) {
             curParent.firstUnprocessedChild += 1;
-            if(!popUntilFreeChildren(out, data, popUnitIfUnsatisfied)) {
+            if(!popUntilFreeChildren(data, popUnitIfUnsatisfied)) {
                 return false;
             }
             data.reuseUnit = false;
@@ -376,18 +380,24 @@ bool RegexLexer::getToken(std::string& out, RegexData& data) const {
         }
 
         // if needs unit, append it
+        /*
         if(cur->usage != UnitUsage_t::NoNeedInUnit) {
-            out.append(data.unit, data.ulen);
+            *end += data.ulen;
         }
+        */
 
         if(cur->children.size() == 0) {
-            if(out.length() == 0) {
+            if(data.startPos == data.pos) {
                 if(data.at == RegexData::LINE_AT_EOF) {
                     data.at = RegexData::LINE_AT_PAST_EOF;
                 }
                 data.extractUnit();
                 data.reuseUnit = false;
+                data.startPos = data.pos;
             }
+
+            *start = data.str + data.startPos;
+            *end = data.str + data.pos;
             return true;
         }
 
@@ -397,6 +407,15 @@ bool RegexLexer::getToken(std::string& out, RegexData& data) const {
     } // while true
     
     return false;
+}
+
+bool RegexLexer::getToken(std::string& out, RegexData& data) const {
+    const char* start;
+    const char* end;
+    if(!getToken(&start, &end, data)) { return false; }
+
+    out = std::string(start, end);
+    return true;
 }
 
 
@@ -422,19 +441,19 @@ int findLastSuperiorTo(dtl::Node& node, const dtl::Children_t& stack) {
 
 bool RegexData::isCurOrNextNewLine() const {
     if(ulen == 1 && unit[0] == '\n') { return true; }
-    if(unitLength((*str)[pos]) == 1 && (*str)[pos] == '\n') { return true; }
+    if(unitLength(str[pos]) == 1 && str[pos] == '\n') { return true; }
     return false;
 }
 
 void RegexData::updateAt() {
-    if(pos == str->length()) { at = LINE_AT_EOF; } 
+    if(pos == strLen) { at = LINE_AT_EOF; } 
     //else if(ulen == 1 && unit[0] == '\n') { at = LINE_AT_END; }
     else if(isCurOrNextNewLine()) { at = LINE_AT_END; }
     else { at = LINE_AT_MID; }
 }
 
 int RegexData::returnUnit() {
-    const int ulen = unitLengthLast(str->c_str() + pos - 1);
+    const int ulen = unitLengthLast(str + pos - 1);
     pos -= ulen;
 
     updateAt();
@@ -443,8 +462,8 @@ int RegexData::returnUnit() {
 }
 
 bool RegexData::extractUnit() {
-    if(pos < str->length()) {
-        ulen = extractUnitStr(unit, str->c_str() + pos);
+    if(pos < strLen) {
+        ulen = extractUnitStr(unit, str + pos);
         pos += ulen;
 
         updateAt();

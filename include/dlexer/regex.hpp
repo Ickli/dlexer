@@ -232,9 +232,11 @@ enum OrGroupMode_t {
 
 struct RegexData {
     std::vector<dtl::NodeMem> stack;
-    const std::string* str = nullptr;
+    const char* str;
+    size_t strLen;
     char unit[4];
     int ulen = 0;
+    int startPos = 0;
     int pos = 0;
     enum {
         LINE_AT_START,
@@ -264,6 +266,7 @@ public:
     bool getToken(std::string& out, std::istream& in);
     bool getToken(std::string& out, const std::string& in);
     bool getToken(std::string& out, RegexData& data) const;
+    bool getToken(const char** start, const char** end, RegexData& data) const;
     void reprogram(const std::string& pat);
 private:
     struct GroupData {
