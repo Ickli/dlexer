@@ -16,3 +16,7 @@ add_executable(regextest regextest.cpp)
 target_include_directories(regextest PRIVATE "${INCLUDE_DIRS}")
 target_link_libraries(regextest PRIVATE dlexer)
 add_test(NAME TestRegexLexer COMMAND regextest)
+
+add_executable(testmain testmain.cpp)
+target_include_directories(testmain PRIVATE "${INCLUDE_DIRS}")
+target_link_libraries(testmain PRIVATE dlexer)

@@ -257,7 +257,6 @@ struct RegexData {
         LINE_AT_EOF,
         LINE_AT_PAST_EOF,
     } at = LINE_AT_START;
-    bool reuseUnit = false;
 
     bool extractUnit();
     // returns number of bytes of reverted unit
@@ -279,7 +278,10 @@ public:
     bool getToken(std::string& out, const std::string& in);
     bool getToken(std::string& out, RegexData& data) const;
     bool getToken(const char** start, const char** end, RegexData& data) const;
+
     void reprogram(const std::string& pat);
+
+    void generateCProgram(const std::string& path);
 private:
 
     std::vector<std::unique_ptr<dtl::Node>> nodes;

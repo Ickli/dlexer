@@ -499,6 +499,19 @@ int main() {
     );
     fail |= t.testAndLog<RegexLexer>();
 
+    t = LexerTestCase::create(
+        "([а-я]+)$|^d",
+        "d d ааа ббб",
+        "d", "ббб"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "a",
+        ""
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
     fail |= testGroups();
 
     return fail;

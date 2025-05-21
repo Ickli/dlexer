@@ -5,6 +5,7 @@
 #include <sstream>
 #include <cassert>
 #include <algorithm>
+#include <fstream>
 
 namespace dlexer {
 
@@ -318,7 +319,7 @@ void RegexLexer::parsePattern(const std::string& pat) {
 
     stack.back()->adaptChild(stack, *createNode<EndNode>(), stack.size());
 
-#if 0
+#if 1
     std::vector<Node*> tr;
     print(nodes[0].get(), 0, tr);
     std::cerr << "ENDNDNDND\n";
@@ -481,6 +482,7 @@ bool RegexData::isCurOrNextNewLine() const {
 
 void RegexData::updateAt() {
     if(pos == strLen) { at = LINE_AT_EOF; } 
+    else if(pos == 0) { at = LINE_AT_START; }
     //else if(ulen == 1 && unit[0] == '\n') { at = LINE_AT_END; }
     else if(isCurOrNextNewLine()) { at = LINE_AT_END; }
     else { at = LINE_AT_MID; }
@@ -866,4 +868,297 @@ void FailNode::adaptChild(Children_t &stack, Node &node, int at) {
     this->children.push_back(&node);
 }
 
+/************************** PROGRAM GENERATION ****************************/
+
+struct GenBodyVisitor: INodeVisitor {
+    std::string cur;
+
+    void visit(UnitNode& n) override {
+        cur = "const char* thisData = \"";
+        for(int i = 0; i < n.ulen; ++i) { cur += n.unit[i]; }
+        cur += "\";\n";
+        cur += "const int thisUlen = ";
+        cur += std::to_string(n.ulen);
+        cur += ";\n"
+        "if(*ulen != thisUlen || memcmp(unit, thisData, thisUlen) != 0) {\n"
+        "return 0;\n}\n\n";
+    }
+    void visit(StartNode& _) override {
+    }
+    void visit(GroupNode& _) override {
+        // pass
+    }
+    void visit(OrNode& _) override {
+        // pass
+    }
+    void visit(RepeatNode& _) override {
+        
+    }
+    void visit(EndNode& _) override {}
+    void visit(AtStartNode& _) override {}
+    void visit(AtEndNode& _) override {}
+    void visit(RangeNode& _) override {}
+    void visit(FailNode& _) override {}
+
+    static std::string get(dtl::Node& n) {
+        GenBodyVisitor v;
+        n.acceptVisitor(v);
+        return v.cur;
+    }
+};
+
+struct GenNameVisitor: INodeVisitor {
+    std::vector<Node*> visited;
+    std::vector<std::string> names;
+
+    // TODO methods
+    void visit(UnitNode& _) override { 
+        static int id = 0;
+        names.push_back("Unit_" + std::to_string(id++)); 
+    }
+    void visit(StartNode& _) override { 
+        static int id = 0;
+        names.push_back("Start_" + std::to_string(id++)); 
+    }
+    void visit(GroupNode& _) override { 
+        static int id = 0;
+        names.push_back("Group_" + std::to_string(id++)); 
+    }
+    void visit(OrNode& _) override { 
+        static int id = 0;
+        names.push_back("Or_" + std::to_string(id++)); 
+    }
+    void visit(RepeatNode& _) override { 
+        static int id = 0;
+        names.push_back("Repeat_" + std::to_string(id++)); 
+    }
+    void visit(EndNode& _) override { 
+        static int id = 0;
+        names.push_back("End_" + std::to_string(id++)); 
+    }
+    void visit(AtStartNode& _) override { 
+        static int id = 0;
+        names.push_back("AtStart_" + std::to_string(id++)); 
+    }
+    void visit(AtEndNode& _) override { 
+        static int id = 0;
+        names.push_back("AtEnd_" + std::to_string(id++)); 
+    }
+    void visit(RangeNode& _) override { 
+        static int id = 0;
+        names.push_back("Range_" + std::to_string(id++)); 
+    }
+    void visit(FailNode& _) override { 
+        static int id = 0;
+        names.push_back("Fail_" + std::to_string(id++)); 
+    }
+
+    std::string& getNameFor(dtl::Node& n) {
+        const auto found = std::find(visited.begin(), visited.end(), &n);
+        if(found != visited.end()) { 
+            return names[std::distance(visited.begin(), found)];
+        }
+        n.acceptVisitor(*this);
+        visited.push_back(&n);
+        return names.back();
+    }
+};
+
+struct BodyGenerator {
+    GenNameVisitor genname;
+    std::vector<Node*> visited;
+    std::vector<std::string> bodies;
+    std::string* curname;
+
+    std::string* getBodyFor(dtl::Node& n) {
+        const auto found = std::find(visited.begin(), visited.end(), &n);
+        if(found != visited.end()) { return nullptr; }
+
+        curname = &genname.getNameFor(n);
+        genBody(n);
+        visited.push_back(&n);
+        return &bodies.back();
+    }
+
+    std::string genNameEnum() {
+        std::string out = "typedef enum {\n";
+        for(const std::string& name: genname.names) {
+            out += name;
+            out += ",\n";
+        }
+        out += "} State;\n";
+        return out;
+    }
+private:
+    void genBody(dtl::Node& n) {
+        auto startNode = isNode<StartNode>(n);
+        if(startNode) {
+            genStartBody(n);
+            return;
+        }
+        auto orNode = isNode<OrNode>(n);
+        if(orNode && orNode->isNegative) {
+            genNegOrBody(n);
+            return;
+        }
+
+        if(n.children.size() == 0) {
+            assert(isNode<EndNode>(n) && "end node must have 0 children");
+            genEndBody(n);
+            return;
+        }
+        genDefaultBody(n);
+    }
+
+    void genEndBody(dtl::Node& n) {
+        auto& out = newBodyWithName();
+
+        out += "*startPos = thisStartPos;\n*pos = thisPos;\n*at = thisAt;\n";
+        out += "return 1;\n";
+        out += "} break;\n"; // switch
+    }
+
+    void genDefaultBody(dtl::Node& n) {
+        auto& out = newBodyWithName();
+
+        if(n.needsUnit) {
+            out += "if(thisAt == LINE_AT_EOF) { return 0; }\n";
+            out += tryFetchIfStat;
+        }
+        out += GenBodyVisitor::get(n);
+        for(Node* child: n.children) {
+            out += genChildCallDefArgs(*child, true, 1);
+        }
+        out += "return 0;\n";
+        out += "} break;\n"; // switch
+    }
+
+    void genStartBody(dtl::Node& n) {
+        auto& out = newBodyWithName();
+        out += 
+        "if(*at == LINE_AT_PAST_EOF) { return 0; }\n"
+        "*startPos = *pos;\n"
+        "\n"
+        "while(*at != LINE_AT_PAST_EOF) {\n";
+        out += "if(";
+        out += genCall(*n.children[0], "*at", "*startPos", "*pos");
+        out += ") {\n";
+
+        out += "if(*startPos == *pos && *at == LINE_AT_EOF) { *at = LINE_AT_PAST_EOF; }\n"
+        "if(*startPos == *pos) {\n"
+        "tryFetch(str, strLen, unit, ulen, pos, at);\n"
+        "*startPos = *pos;\n"
+        "}\n"
+        "return 1;\n"
+        "}\n" // if gettok_args
+        
+        "if(*at == LINE_AT_EOF) { *at = LINE_AT_PAST_EOF; break; }\n"
+        "else if(tryFetch(str, strLen, unit, ulen, pos, at)) { *startPos = *pos; }\n"
+        "else { return 0; }\n"
+        "}\n" // while
+        "\n"
+        "return 0;\n"
+        "} break; \n"; // switch
+    }
+
+    void genNegOrBody(dtl::Node& n) {
+        auto& out = newBodyWithName();
+
+        out += tryFetchIfStat;
+
+        for(int i = 0; i < n.children.size() - 1; ++i) {
+            Node* c = n.children[i];
+            out += genChildCallDefArgs(*c, true, 0);
+        }
+        out += "return ";
+        out += genCall(*n.children.back(), "thisAt", "thisStartPos", "thisPos");
+        out += ";\n"
+        "} break; \n"; // switch
+    }
+
+    std::string genChildCallDefArgs(dtl::Node& n, bool notNegate = true, int retval = 0) {
+        std::string out;
+        out += "if(";
+        if(!notNegate) { out += '!'; }
+        out += genCall(n, "thisAt", "thisStartPos", "thisPos");
+        out += ") {\n"
+        "return ";
+        out += std::to_string(retval);
+        out += ";\n}\n";
+        return out;
+    }
+
+    std::string& newBodyWithName() {
+        auto& out = newBody();
+        appendCaseName(out);
+        return out;
+    }
+
+    std::string& newBody() {
+        bodies.push_back("");
+        return bodies.back();
+    }
+
+    void appendCaseName(std::string& out) {
+        out += "case ";
+        out += *curname;
+        out += ": {\n";
+    }
+
+    std::string genCall(dtl::Node& n, const std::string& at, const std::string& startPos, const std::string& pos) {
+        std::string out = "GETTOK_ARGS(";
+        out += genname.getNameFor(n);
+        out += ", "; out += at;
+        out += ", "; out += startPos;
+        out += ", "; out += pos;
+        out += ")";
+
+        return out;
+    }
+
+    const std::string tryFetchCall = "tryFetch(str, strLen, unit, ulen, &thisPos, &thisAt)";
+    const std::string tryFetchIfStat = "if(!" + tryFetchCall + ") {\n"
+    "return 0;\n}\n\n";
+};
+
+static std::string getCPrelude() {
+    static const char* path = "../templates/regex/prelude.c";
+    std::ifstream ifs(path);
+    return std::string(
+        (std::istreambuf_iterator<char>(ifs)),
+        (std::istreambuf_iterator<char>())
+    );
+}
+
+static std::string getCPost() {
+    static const char* path = "../templates/regex/post.c";
+    std::ifstream ifs(path);
+    return std::string(
+        (std::istreambuf_iterator<char>(ifs)),
+        (std::istreambuf_iterator<char>())
+    );
+}
+
+void RegexLexer::generateCProgram(const std::string& path) {
+    std::string out = getCPrelude();
+    std::string mid;
+
+    BodyGenerator v;
+    for(int i = 0; i < nodes.size(); ++i) {
+        Node* n = nodes[i].get();
+
+        std::string* body = v.getBodyFor(*n);
+        if(body != nullptr) { mid += *body; }
+    }
+
+    out += v.genNameEnum();
+    out += '\n';
+
+    out += mid;
+    out += getCPost();
+
+    std::ofstream outfile(path);
+    outfile << out;
+    outfile.close();
+}
 } // namespace dlexer
