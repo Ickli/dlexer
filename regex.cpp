@@ -6,8 +6,6 @@
 #include <cassert>
 #include <algorithm>
 
-//TODO: move tying a repeated unit to RepeatNode inside RepeatNode.adaptChild
-
 namespace dlexer {
 
 namespace dtl {
@@ -18,6 +16,7 @@ struct IsSpecialVisitor: INodeVisitor {
     void visit(AtStartNode& _) override { is = true; }
     void visit(AtEndNode& _) override { is = true; }
     void visit(UnitNode& _) override { is = true; }
+    // void visit(GroupNode& g) override { is = g.isEnd(); }
 
     static bool check(Node& n) {
         IsSpecialVisitor v;
@@ -74,6 +73,29 @@ static void insertBetween(const Children_t& stack, Node& node, int at) {
     }
 }
 
+void adaptEndGroupNode_(GroupNode& end, Node& curParent, Children_t& visit) {
+    const auto found = 
+        std::find(visit.cbegin(), visit.cend(), &curParent) != visit.cend();
+    if(found) { return; }
+
+    const size_t childrenSize = curParent.children.size();
+    assert(curParent.children.size() > 0 
+        && "leaves must have at least end node");
+
+    visit.push_back(&curParent);
+    for(int childInd = 0; childInd < curParent.children.size(); ++childInd) {
+        Node* const child = curParent.children[childInd];
+        if(isNode<EndNode>(*child)) { curParent.children[childInd] = &end; }
+        else if(isNode<FailNode>(*child)) { continue; }
+        else { adaptEndGroupNode_(end, *child, visit); }
+    }
+}
+
+void adaptEndGroupNode(GroupNode& end, Node& curParent) {
+    Children_t visit;
+    adaptEndGroupNode_(end, curParent, visit);
+}
+
 } // namespace dtl
 
 using namespace dtl;
@@ -112,7 +134,7 @@ static void print(Node* n, int d, std::vector<Node*> traversed) {
 
 int findLastSuperiorTo(dtl::Node& node, const dtl::Children_t& stack);
 
-void RegexLexer::appendNode(dtl::Children_t& stack, dtl::Node* newNode) {
+void RegexLexer::appendNode(dtl::Children_t& stack, dtl::Node* newNode, bool addEnd) {
     const int supAdapterAt = findLastSuperiorTo(*newNode, stack);
     Node& supAdapter = *stack[supAdapterAt];
     Node& curAdapter = *stack.back();
@@ -121,7 +143,8 @@ void RegexLexer::appendNode(dtl::Children_t& stack, dtl::Node* newNode) {
         curAdapter.adaptChild(stack, *newNode, stack.size());
     } else {
         Node* endNode = createNode<EndNode>();
-        {
+
+        if(addEnd) {
             const size_t oldStackSize = stack.size();
             curAdapter.adaptChild(stack, *endNode, stack.size());
             assert(oldStackSize + 1 == stack.size() && "end node must only append to stack");
@@ -131,25 +154,23 @@ void RegexLexer::appendNode(dtl::Children_t& stack, dtl::Node* newNode) {
 }
 
 void RegexLexer::appendOrGroupNode(dtl::Children_t& stack, std::vector<dtl::Node*> orGroup, bool isExclusive) {
-    const int gid = groups.size();
-    groups.push_back({});
     GroupNode* groupStart = static_cast<GroupNode*>(
-            createNode<GroupNode>(gid, nullptr, false, false));
+        createNode<GroupNode>(-1, nullptr, false, false));
     GroupNode* groupEnd = static_cast<GroupNode*>(
-        createNode<GroupNode>(gid, groupStart, true, false));
+        createNode<GroupNode>(-1, groupStart, true, false));
     groupStart->paired = groupEnd;
 
     Node* ornode = createNode<OrNode>(isExclusive);
 
-    appendNode(stack, groupStart);
-    appendNode(stack, ornode);
+    appendNode(stack, groupStart, true);
+    appendNode(stack, ornode, true);
 
     static const int toPopCount = 2;
     for(Node* orchild: orGroup) {
-        appendNode(stack, orchild);
+        appendNode(stack, orchild, true);
 
-        if(isExclusive) { appendNode(stack, createNode<FailNode>());
-        } else { appendNode(stack, createNode<EndNode>()); }
+        if(isExclusive) { appendNode(stack, createNode<FailNode>(), true);
+        } else { appendNode(stack, createNode<EndNode>(), true); }
 
         stack.resize(stack.size() - toPopCount);
     }
@@ -157,11 +178,12 @@ void RegexLexer::appendOrGroupNode(dtl::Children_t& stack, std::vector<dtl::Node
     if(isExclusive) {
         // inserting path of escape for succesful "not matching anything"
         // it'll be replaced with groupEnd during successive appendNode()
-        appendNode(stack, createNode<EndNode>());
+        // appending it to OrNode
+        appendNode(stack, createNode<EndNode>(), true);
         stack.pop_back();
     }
 
-    appendNode(stack, groupEnd);
+    appendNode(stack, groupEnd, true);
 }
 
 void RegexLexer::adaptOrGroupSymbol(std::vector<dtl::Node*>& stack, std::vector<dtl::Node*>& group, OrGroupMode_t& mode, bool& isRangePending, const char* unit, int ulen, bool& isEscaped) {
@@ -231,6 +253,10 @@ void RegexLexer::parsePattern(const std::string& pat) {
     bool isEscaped = false;
     int lastRepeatNodeAt = -1;
     OrGroupMode_t orGroupMode = OrGroupMode_t::OUTSIDE;
+
+#if 0
+    std::cerr << "START: " << pat << '\n';
+#endif 
     
     for(int byteInd = 0; byteInd < pat.size(); byteInd += ulen) {
         ulen = extractUnitStr(unit, pat.c_str() + byteInd);
@@ -250,15 +276,15 @@ void RegexLexer::parsePattern(const std::string& pat) {
         else switch(unit[0]) {
         case '|': newNode = createNode<OrNode>(); break;
         case '(': {
-            const int gid = groups.size();
-            groups.push_back({});
-            newNode = createNode<GroupNode>(gid, nullptr, false);
+            const int gid = this->freeGroupId;
+            this->freeGroupId++;
+            newNode = createNode<GroupNode>(gid, nullptr, false, true);
             groupStartStack.push_back(static_cast<GroupNode*>(newNode));
         } break;
         case ')': {
             GroupNode* start = groupStartStack.back();
             groupStartStack.pop_back();
-            newNode = createNode<GroupNode>(start->groupId, start, true);
+            newNode = createNode<GroupNode>(start->groupId, start, true, true);
             start->paired = static_cast<GroupNode*>(newNode);
         } break;
         case '*': {
@@ -287,13 +313,12 @@ void RegexLexer::parsePattern(const std::string& pat) {
         default: newNode = createNode<UnitNode>(unit, ulen); break;
         } // else switch
 
-        appendNode(stack, newNode);
+        appendNode(stack, newNode, true);
     }
 
     stack.back()->adaptChild(stack, *createNode<EndNode>(), stack.size());
 
 #if 0
-    std::cerr << "START: " << pat << '\n';
     std::vector<Node*> tr;
     print(nodes[0].get(), 0, tr);
     std::cerr << "ENDNDNDND\n";
@@ -361,6 +386,9 @@ bool RegexLexer::getToken(const char** start, const char** end, RegexData& data)
     data.startPos = data.pos;
     data.stack.clear();
 
+    data.groups.insert(data.groups.begin(), this->freeGroupId,
+        RegexData::Group{ -1, -1 });
+
     data.stack.push_back({nodes[0].get(), 0});
 
     while(true) {
@@ -383,7 +411,7 @@ bool RegexLexer::getToken(const char** start, const char** end, RegexData& data)
             }
             data.reuseUnit = cur->usage == UnitUsage_t::ShareWithChild;
         }
-        
+
         const int next = cur->satisfies(data);
 
         // if not satisfied, revert
@@ -396,13 +424,7 @@ bool RegexLexer::getToken(const char** start, const char** end, RegexData& data)
             continue;
         }
 
-        // if needs unit, append it
-        /*
-        if(cur->usage != UnitUsage_t::NoNeedInUnit) {
-            *end += data.ulen;
-        }
-        */
-
+        // it's guaranteed that only end node has 0 children
         if(cur->children.size() == 0) {
             if(data.startPos == data.pos) {
                 if(data.at == RegexData::LINE_AT_EOF) {
@@ -546,6 +568,7 @@ void OrNode::adaptEndGroupNode(GroupNode& node, Node& curParent, std::vector<Nod
         std::find(visit.cbegin(), visit.cend(), &curParent) != visit.cend();
     if(found) { return; }
 
+    const size_t childrenSize = curParent.children.size();
     assert(curParent.children.size() != 0 && "leaves must have end node");
 
     Node& back = *curParent.children.back();
@@ -564,10 +587,18 @@ void OrNode::adaptEndGroupNode(GroupNode& node, Node& curParent, std::vector<Nod
 void OrNode::adaptChild(Children_t &stack, Node &node, int at) {
     GroupNode* gnode = isNode<GroupNode>(node);
     if(gnode != nullptr && gnode->isEnd()) {
-        std::vector<Node*> visit;
+        /*
         adaptEndGroupNode(*gnode, *this, visit);
         gnode->lowerPresedence();
+        
+        int startAt = gnode->findPairedOnStack(stack);
+        stack.resize(startAt + 1);
+
         stack.push_back(&node);
+        */
+        stack.push_back(&node);
+        dtl::adaptEndGroupNode(*gnode, *this);
+        gnode->clearStackBetweenPaired(stack);
         return;
     }
 
@@ -590,7 +621,42 @@ GroupNode::GroupNode(int id, GroupNode* p, bool isEnd, bool capture)
 GroupNode::GroupNode(int id, GroupNode* p, bool isEnd): GroupNode(id, p, isEnd, true) {}
 
 bool GroupNode::isEnd() const { return skipSpecials; }
-int GroupNode::satisfies(RegexData& data) const { return 0; }
+
+int GroupNode::findPairedOnStack(const Children_t& stack) const {
+    assert(stack.size() >= 2 
+        && "stack must contain at least start and group start nodes");
+    int startAt = stack.size() - 1;
+
+    for(;startAt >= 0; --startAt) {
+        if(stack[startAt] == this->paired) { break; }
+    }
+    assert(startAt >= 1 && "stack must contain group start node");
+
+    return startAt;
+}
+
+void GroupNode::clearStackBetweenPaired(Children_t& stack) const {
+    assert(this == stack.back() && isEnd() && "group end must be on top");
+    const int startAt = findPairedOnStack(stack);
+    Node* const nonConstThis = stack.back();
+    stack.resize(startAt + 2);
+    stack.back() = nonConstThis;
+}
+
+int GroupNode::satisfies(RegexData& data) const {
+    assert(groupId < static_cast<int>(data.groups.size()));
+
+    if(!capture) { return 0; }
+
+    assert(groupId >= 0 && "only not capturing group may have id < 0");
+
+    if(isEnd()) {
+        data.groups[groupId].end = data.pos;
+    } else {
+        data.groups[groupId].start = data.pos;
+    }
+    return 0; 
+}
 
 void GroupNode::lowerPresedence() {
     assert(paired != nullptr);
@@ -599,30 +665,44 @@ void GroupNode::lowerPresedence() {
 }
 
 void GroupNode::adaptChild(Children_t &stack, Node &node, int at) {
-    const GroupNode* gnode = isNode<GroupNode>(node);
+    GroupNode* const gnode = isNode<GroupNode>(node);
     const bool isNodeEnd = gnode != nullptr && gnode->isEnd();
 
     if(isNode<RepeatNode>(node)) {
-        int startAt = stack.size() - 2;
         assert(at == stack.size() && "star node must be appended at stack end");
         assert(stack.size() >= 3 && "stack must contain start, group start and group end");
 
-        for(;startAt >= 0; --startAt) {
-            Node& cur = *stack[startAt];
-            if(&cur == this->paired) { break; }
-        }
+        const int startAt = this->findPairedOnStack(stack);
 
-        // TODO: don't assume startAt > 0 and return error if < 0
-        assert(startAt > 0 && "group start node must be on the stack");
-
+#if 0
+        std::cerr << "STACK BEFORE ENC: ";
+        for(auto ch: stack) { std::cerr << NameVisitor::get(*ch) << " "; }
+        std::cerr << '\n';
+#endif
+        
         insertBetween(stack, node, startAt); 
         stack.resize(startAt + 1);
         stack.back() = &node;
     } else if(isNodeEnd && stack.back() != this) { 
-        // if group end node, and EndNode at stack's top
-        assert(stack.size() >= 3 && "start, group start and end nodes must be on stack");
+#if 0
+        std::cerr << "add group end: ";
+        for(auto ch: stack) { std::cerr << NameVisitor::get(*ch) << ' '; }
+        std::cerr << '\n';
+#endif
+        assert(stack.size() >= 3 
+            && "start, group start and end nodes must be on stack");
+        /*
         stack.back() = &node;
         stack[stack.size() - 2]->children.back() = &node;
+        */
+        /*
+        stack.back()->adaptChild(stack, node, stack.size());
+        gnode->clearStackBetweenPaired(stack);
+        lowerPresedence();
+        */
+        dtl::adaptEndGroupNode(*gnode, *this);
+        stack.push_back(gnode);
+        gnode->clearStackBetweenPaired(stack);
         lowerPresedence();
     } else {
         insertBetween(stack, node, at);
@@ -630,6 +710,13 @@ void GroupNode::adaptChild(Children_t &stack, Node &node, int at) {
         stack.push_back(&node);
         if(isNodeEnd) { lowerPresedence(); }
     }
+
+#if 0
+    std::cerr << "AFTER ENCOMPASSING REPEAT\n";
+    std::vector<Node*> tr;
+    print(stack[0], 0, tr);
+    std::cerr << "END REPEAT\n";
+#endif
 }
 
 int StartNode::satisfies(RegexData& data) const { return -1; }
@@ -686,6 +773,13 @@ void RepeatNode::adaptChild(Children_t &stack, Node &node, int at) {
 
     subAdapter->children.push_back(&node); 
     stack.push_back(&node);
+
+#if 0
+    std::cerr << "MYMYMYMYMYMMYMYM\n";
+    std::vector<Node*> tr;
+    print(stack[0], 0, tr);
+    std::cerr << "END MYMYMYMYMYMMYMYM\n";
+#endif
 }
 
 EndNode::EndNode() {}

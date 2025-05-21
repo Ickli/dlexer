@@ -120,6 +120,9 @@ struct GroupNode: NodeCRTP<GroupNode> {
     void adaptChild(Children_t& stack, Node& node, int at) override;
 
     void lowerPresedence();
+
+    int findPairedOnStack(const Children_t& stack) const;
+    void clearStackBetweenPaired(Children_t& stack) const;
 };
 
 struct OrNode: NodeCRTP<OrNode> {
@@ -235,7 +238,18 @@ enum OrGroupMode_t {
 } // namespace dtl
 
 struct RegexData {
+    struct Group {
+        int start;
+        int end;
+    };
+
+    RegexData() {}
+    RegexData(const std::string& str): str(str.c_str()), strLen(str.length())
+    {}
+    RegexData(const char* str, size_t strLen): str(str), strLen(strLen) {}
+
     std::vector<dtl::NodeMem> stack;
+    std::vector<Group> groups;
     const char* str;
     size_t strLen;
     char unit[4];
@@ -273,20 +287,16 @@ public:
     bool getToken(const char** start, const char** end, RegexData& data) const;
     void reprogram(const std::string& pat);
 private:
-    struct GroupData {
-        int start;
-        int end;
-    };
 
     std::vector<std::unique_ptr<dtl::Node>> nodes;
-    std::vector<GroupData> groups;
     std::istream* istream = nullptr;
     std::string istreamString;
+    int freeGroupId = 0;
 
     void extractStringFromIstream(std::istream& s);
 
     void parsePattern(const std::string& pat);
-    void appendNode(dtl::Children_t& stack, dtl::Node* newNode);
+    void appendNode(dtl::Children_t& stack, dtl::Node* newNode, bool addEnd);
     void appendOrGroupNode(dtl::Children_t& stack, std::vector<dtl::Node*> orGroup, bool isExclusive);
     void adaptOrGroupSymbol(std::vector<dtl::Node*>& stack, std::vector<dtl::Node*>& group, dtl::OrGroupMode_t& mode, bool& isRangePending, const char* unit, int ulen, bool& isEscaped);
 
