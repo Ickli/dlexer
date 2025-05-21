@@ -254,7 +254,7 @@ void RegexLexer::parsePattern(const std::string& pat) {
     int lastRepeatNodeAt = -1;
     OrGroupMode_t orGroupMode = OrGroupMode_t::OUTSIDE;
 
-#if 0
+#if 1
     std::cerr << "START: " << pat << '\n';
 #endif 
     
@@ -343,7 +343,7 @@ static bool popUntilFreeChildren(RegexData& data, bool hasLastUnitFetched) {
         if(back.firstUnprocessedChild < back.node->children.size()) {
             return true;
         }
-        if(back.node->usage != UnitUsage_t::NoNeedInUnit) {
+        if(back.node->needsUnit) {
             data.returnUnit();
         }
         data.stack.pop_back();
@@ -395,12 +395,10 @@ bool RegexLexer::getToken(const char** start, const char** end, RegexData& data)
         NodeMem& curParent = data.stack.back();
         Node* cur = curParent.node->children[curParent.firstUnprocessedChild];
 
-        const bool needsUnit = cur->usage != UnitUsage_t::NoNeedInUnit;
-        const bool popUnitIfUnsatisfied = needsUnit & !data.reuseUnit;
         // Fetch unit if needed
-        if(needsUnit) {
+        if(cur->needsUnit) {
             // if can't fetch
-            if(data.at == RegexData::LINE_AT_EOF || !(data.reuseUnit || data.extractUnit())) { 
+            if(data.at == RegexData::LINE_AT_EOF || !data.extractUnit()) { 
                 curParent.firstUnprocessedChild += 1;
                 // false because eof and we haven't fetched anything
                 if(!popUntilFreeChildren(data, false)) {
@@ -409,7 +407,6 @@ bool RegexLexer::getToken(const char** start, const char** end, RegexData& data)
                 }
                 continue;
             }
-            data.reuseUnit = cur->usage == UnitUsage_t::ShareWithChild;
         }
 
         const int next = cur->satisfies(data);
@@ -417,10 +414,9 @@ bool RegexLexer::getToken(const char** start, const char** end, RegexData& data)
         // if not satisfied, revert
         if(next == -1) {
             curParent.firstUnprocessedChild += 1;
-            if(!popUntilFreeChildren(data, popUnitIfUnsatisfied)) {
+            if(!popUntilFreeChildren(data, cur->needsUnit)) {
                 return false;
             }
-            data.reuseUnit = false;
             continue;
         }
 
@@ -431,7 +427,6 @@ bool RegexLexer::getToken(const char** start, const char** end, RegexData& data)
                     data.at = RegexData::LINE_AT_PAST_EOF;
                 }
                 data.extractUnit();
-                data.reuseUnit = false;
                 data.startPos = data.pos;
             }
 
@@ -538,20 +533,16 @@ void UnitNode::adaptChild(Children_t &stack, Node &node, int at) {
     }
 }
 
-OrNode::OrNode(bool neg)
-    : NodeCRTP(
-        true,
-        neg ? UnitUsage_t::Consume : OrNode::UnitUsage
-    ), isNegative(neg) {}
+OrNode::OrNode(bool neg): NodeCRTP(true, neg), isNegative(neg) {}
 
 OrNode::OrNode(): OrNode(false) {}
 
 int OrNode::satisfies(RegexData& data) const {
     if(!isNegative) { 
-        assert(usage == OrNode::UnitUsage);
+        assert(!this->needsUnit);
         return 0; 
     }
-    assert(usage == UnitUsage_t::Consume);
+    assert(this->needsUnit);
     assert(children.size() > 1);
 
     for(int i = 0; i < children.size() - 1; ++i) {

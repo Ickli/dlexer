@@ -26,21 +26,15 @@ struct FailNode;
 
 using Children_t = std::vector<Node*>;
 
-enum UnitUsage_t {
-    Consume,
-    ShareWithChild,
-    NoNeedInUnit,
-};
-
 struct Node {
     Children_t children;
-    UnitUsage_t usage;
+    bool needsUnit;
     int pres;
     bool skipSpecials;
 
-    Node(bool skip, UnitUsage_t usage, int pres)
+    Node(bool skip, bool usage, int pres)
         : skipSpecials(skip)
-        , usage(usage)
+        , needsUnit(usage)
         , pres(pres)
         {}
     virtual ~Node() {}
@@ -71,7 +65,7 @@ struct INodeVisitor {
 template<typename Derived>
 struct NodeCRTP: Node {
     NodeCRTP(): Node(Derived::SkipSpecials, Derived::UnitUsage, Derived::Presedence) {}
-    NodeCRTP(bool skip, UnitUsage_t usage): Node(skip, usage, Derived::Presedence) {}
+    NodeCRTP(bool skip, bool needsUnit): Node(skip, needsUnit, Derived::Presedence) {}
     NodeCRTP(bool skip): NodeCRTP(skip, Derived::UnitUsage) {}
 
     void acceptVisitor(dtl::INodeVisitor& visitor) override {
@@ -83,7 +77,7 @@ struct NodeCRTP: Node {
 struct UnitNode: NodeCRTP<UnitNode> {
     static const int Presedence = 1;
     static const bool SkipSpecials = false;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::Consume;
+    static const bool UnitUsage = true;
     char unit[4];
     int ulen;
 
@@ -96,7 +90,7 @@ struct UnitNode: NodeCRTP<UnitNode> {
 struct StartNode: NodeCRTP<StartNode> {
     static const int Presedence = 6;
     static const bool SkipSpecials = false;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+    static const bool UnitUsage = false;
 
     int satisfies(RegexData& data) const override;
     void adaptChild(Children_t& stack, Node& node, int at) override;
@@ -106,7 +100,7 @@ struct GroupNode: NodeCRTP<GroupNode> {
     static const int Presedence = 2;
     static const int PairedPresedence = 1;
     static const bool SkipSpecials = true;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+    static const bool UnitUsage = false;
     GroupNode* paired;
     int groupId;
     bool capture;
@@ -128,7 +122,7 @@ struct GroupNode: NodeCRTP<GroupNode> {
 struct OrNode: NodeCRTP<OrNode> {
     static const int Presedence = 2;
     static const bool SkipSpecials = true;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+    static const bool UnitUsage = false;
 
     // If true, becomes consuming;
     // If true, checks that every child except the last one is not satisfied;
@@ -148,7 +142,7 @@ private:
 struct RepeatNode: NodeCRTP<RepeatNode> {
     static const int Presedence = 1;
     static const bool SkipSpecials = false;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+    static const bool UnitUsage = false;
 
     enum Mode {
         ZERO_OR_MORE,
@@ -166,7 +160,7 @@ struct RepeatNode: NodeCRTP<RepeatNode> {
 struct EndNode: NodeCRTP<EndNode> {
     static const int Presedence = 1;
     static const bool SkipSpecials = false;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+    static const bool UnitUsage = false;
 
     EndNode();
 
@@ -177,7 +171,7 @@ struct EndNode: NodeCRTP<EndNode> {
 struct AtStartNode: NodeCRTP<AtStartNode> {
     static const int Presedence = 1;
     static const bool SkipSpecials = false;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+    static const bool UnitUsage = false;
 
     AtStartNode();
 
@@ -188,7 +182,7 @@ struct AtStartNode: NodeCRTP<AtStartNode> {
 struct AtEndNode: NodeCRTP<AtEndNode> {
     static const int Presedence = 1;
     static const bool SkipSpecials = false;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+    static const bool UnitUsage = false;
 
     AtEndNode();
 
@@ -199,7 +193,7 @@ struct AtEndNode: NodeCRTP<AtEndNode> {
 struct RangeNode: NodeCRTP<RangeNode> {
     static const int Presedence = 1;
     static const bool SkipSpecials = false;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::Consume;
+    static const bool UnitUsage = true;
 
     int startlen;
     int endlen;
@@ -217,7 +211,7 @@ struct RangeNode: NodeCRTP<RangeNode> {
 struct FailNode: NodeCRTP<FailNode> {
     static const int Presedence = 1;
     static const bool SkipSpecials = false;
-    static const UnitUsage_t UnitUsage = UnitUsage_t::NoNeedInUnit;
+    static const bool UnitUsage = false;
 
     FailNode();
 
