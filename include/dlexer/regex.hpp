@@ -310,7 +310,6 @@ private:
     template<typename NodeType, typename... Args>
     dtl::Node* createNode(Args... args) {
         nodes.push_back(std::make_unique<NodeType>(std::forward<Args>(args)...));
-        std::cerr << "creating node: " << nodes.back().get() << '\n';
         return nodes.back().get();
     }
 };

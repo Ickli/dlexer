@@ -17,7 +17,6 @@ struct IsSpecialVisitor: INodeVisitor {
     void visit(AtStartNode& _) override { is = true; }
     void visit(AtEndNode& _) override { is = true; }
     void visit(UnitNode& _) override { is = true; }
-    // void visit(GroupNode& g) override { is = g.isEnd(); }
 
     static bool check(Node& n) {
         IsSpecialVisitor v;
@@ -100,16 +99,6 @@ void adaptEndGroupNode(GroupNode& end, Node& curParent) {
 } // namespace dtl
 
 using namespace dtl;
-
-/*
-    1b
-    \w*b
-    \w+
-    abc
-    a|b
-    ab|ba
-    ^(abc)
-*/
 
 RegexLexer::RegexLexer(const std::string& pat) {
     createNode<StartNode>();
@@ -276,7 +265,7 @@ void RegexLexer::parsePattern(const std::string& pat) {
     int lastRepeatNodeAt = -1;
     OrGroupMode_t orGroupMode = OrGroupMode_t::OUTSIDE;
 
-#if 1
+#if 0
     std::cerr << "START: " << pat << '\n';
 #endif 
     
@@ -348,7 +337,7 @@ void RegexLexer::parsePattern(const std::string& pat) {
 
     stack.back()->adaptChild(stack, *createNode<EndNode>(), stack.size());
 
-#if 1
+#if 0
     std::vector<Node*> tr;
     print(nodes[0].get(), 0, tr);
     std::cerr << "ENDNDNDND\n";
@@ -511,26 +500,6 @@ int findLastSuperiorTo(dtl::Node& node, const dtl::Children_t& stack) {
     return findLastSuperiorOnStack(node.pres, stack, checker);
 }
 
-/*
-int findLastSuperiorTo(dtl::Node& node, const dtl::Children_t& stack) {
-    int i = stack.size() - 1;
-    IsSpecialVisitor checker;
-    node.acceptVisitor(checker);
-
-    if(checker.is || !node.skipSpecials) { return i; }
-    checker.is = false;
-
-    for(; i >= 0; --i) {
-        stack[i]->acceptVisitor(checker);
-        if(!checker.is && stack[i]->pres >= node.pres) {
-            break;
-        }
-        checker.is = false;
-    }
-    return i;
-}
-*/
-
 /***********************************  NODES  *******************************/
 
 bool RegexData::isCurOrNextNewLine() const {
@@ -639,15 +608,6 @@ void OrNode::adaptEndGroupNode(GroupNode& node, Node& curParent, std::vector<Nod
 void OrNode::adaptChild(Children_t &stack, Node &node, int at) {
     GroupNode* gnode = isNode<GroupNode>(node);
     if(gnode != nullptr && gnode->isEnd()) {
-        /*
-        adaptEndGroupNode(*gnode, *this, visit);
-        gnode->lowerPresedence();
-        
-        int startAt = gnode->findPairedOnStack(stack);
-        stack.resize(startAt + 1);
-
-        stack.push_back(&node);
-        */
         stack.push_back(&node);
         dtl::adaptEndGroupNode(*gnode, *this);
         gnode->clearStackBetweenPaired(stack);
@@ -738,32 +698,13 @@ void GroupNode::adaptChild(Children_t &stack, Node &node, int at) {
 
         const int startAt = this->findPairedOnStack(stack);
 
-#if 0
-        std::cerr << "STACK BEFORE ENC: ";
-        for(auto ch: stack) { std::cerr << NameVisitor::get(*ch) << " "; }
-        std::cerr << '\n';
-#endif
-        
         insertBetween(stack, node, startAt); 
         stack.resize(startAt + 1);
         stack.back() = &node;
     } else if(isNodeEnd && stack.back() != this) { 
-#if 0
-        std::cerr << "add group end: ";
-        for(auto ch: stack) { std::cerr << NameVisitor::get(*ch) << ' '; }
-        std::cerr << '\n';
-#endif
         assert(stack.size() >= 3 
             && "start, group start and end nodes must be on stack");
-        /*
-        stack.back() = &node;
-        stack[stack.size() - 2]->children.back() = &node;
-        */
-        /*
-        stack.back()->adaptChild(stack, node, stack.size());
-        gnode->clearStackBetweenPaired(stack);
-        lowerPresedence();
-        */
+
         dtl::adaptEndGroupNode(*gnode, *this);
         stack.push_back(gnode);
         gnode->clearStackBetweenPaired(stack);
@@ -774,13 +715,6 @@ void GroupNode::adaptChild(Children_t &stack, Node &node, int at) {
         stack.push_back(&node);
         if(isNodeEnd) { lowerPresedence(); }
     }
-
-#if 0
-    std::cerr << "AFTER ENCOMPASSING REPEAT\n";
-    std::vector<Node*> tr;
-    print(stack[0], 0, tr);
-    std::cerr << "END REPEAT\n";
-#endif
 }
 
 int StartNode::satisfies(RegexData& data) const { return -1; }
@@ -837,13 +771,6 @@ void RepeatNode::adaptChild(Children_t &stack, Node &node, int at) {
 
     subAdapter->children.push_back(&node); 
     stack.push_back(&node);
-
-#if 0
-    std::cerr << "MYMYMYMYMYMMYMYM\n";
-    std::vector<Node*> tr;
-    print(stack[0], 0, tr);
-    std::cerr << "END MYMYMYMYMYMMYMYM\n";
-#endif
 }
 
 EndNode::EndNode() {}
@@ -1253,7 +1180,7 @@ private:
 };
 
 static std::string getCPrelude() {
-    static const char* path = "../templates/regex/prelude.c";
+    static const char* path = "templates/regex/prelude.c";
     std::ifstream ifs(path);
     return std::string(
         (std::istreambuf_iterator<char>(ifs)),
@@ -1262,7 +1189,7 @@ static std::string getCPrelude() {
 }
 
 static std::string getCPost() {
-    static const char* path = "../templates/regex/post.c";
+    static const char* path = "templates/regex/post.c";
     std::ifstream ifs(path);
     return std::string(
         (std::istreambuf_iterator<char>(ifs)),
