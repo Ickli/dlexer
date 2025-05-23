@@ -4,6 +4,7 @@
 #include <string>
 #include <memory>
 #include <utility>
+#include <iostream>
 
 namespace dlexer {
 
@@ -40,6 +41,11 @@ struct Node {
     virtual ~Node() {}
     virtual int satisfies(RegexData& data) const = 0;
 
+    // TODO: has side effects only for GroupNode;
+    //       think how to remove this method from other nodes
+    //       and revert without some kinds of RTTI
+    virtual void revert(RegexData& data) const = 0;
+
     virtual void acceptVisitor(dtl::INodeVisitor& visitor) = 0;
 
     // returns next child adapter
@@ -67,6 +73,8 @@ struct NodeCRTP: Node {
     NodeCRTP(): Node(Derived::SkipSpecials, Derived::UnitUsage, Derived::Presedence) {}
     NodeCRTP(bool skip, bool needsUnit): Node(skip, needsUnit, Derived::Presedence) {}
     NodeCRTP(bool skip): NodeCRTP(skip, Derived::UnitUsage) {}
+
+    void revert(RegexData& data) const override {};
 
     void acceptVisitor(dtl::INodeVisitor& visitor) override {
         Derived& castedSelf = *static_cast<Derived*>(this);
@@ -101,6 +109,7 @@ struct GroupNode: NodeCRTP<GroupNode> {
     static const int PairedPresedence = 1;
     static const bool SkipSpecials = true;
     static const bool UnitUsage = false;
+
     GroupNode* paired;
     int groupId;
     bool capture;
@@ -111,6 +120,7 @@ struct GroupNode: NodeCRTP<GroupNode> {
     bool isEnd() const;
 
     int satisfies(RegexData& data) const override;
+    void revert(RegexData& data) const override;
     void adaptChild(Children_t& stack, Node& node, int at) override;
 
     void lowerPresedence();
@@ -295,10 +305,12 @@ private:
     void appendNode(dtl::Children_t& stack, dtl::Node* newNode, bool addEnd);
     void appendOrGroupNode(dtl::Children_t& stack, std::vector<dtl::Node*> orGroup, bool isExclusive);
     void adaptOrGroupSymbol(std::vector<dtl::Node*>& stack, std::vector<dtl::Node*>& group, dtl::OrGroupMode_t& mode, bool& isRangePending, const char* unit, int ulen, bool& isEscaped);
+    void adaptStackToSiblingOr(dtl::Children_t& stack, int sibAt);
 
     template<typename NodeType, typename... Args>
     dtl::Node* createNode(Args... args) {
         nodes.push_back(std::make_unique<NodeType>(std::forward<Args>(args)...));
+        std::cerr << "creating node: " << nodes.back().get() << '\n';
         return nodes.back().get();
     }
 };

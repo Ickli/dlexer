@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define GETTOK_ARGS(state, thisAt, thisStartPos, thisPos) getToken(str, strLen, startPos, pos, at, unit, ulen, state, thisAt, thisStartPos, thisPos)
+#define GETTOK_ARGS(state, thisAt, thisStartPos, thisPos) getToken_(str, strLen, startPos, pos, at, unit, ulen, groups, state, thisAt, thisStartPos, thisPos)
 
 typedef enum {
     LINE_AT_START,
@@ -54,7 +54,7 @@ int tryFetch(
     return ulen != 0;
 }
 
-int getToken(
+int getToken_(
     const char* str, 
     const int* strLen, 
     int* startPos,
@@ -62,6 +62,7 @@ int getToken(
     LineAt* at,
     char* unit, 
     int* ulen,
+    int* groups,
     int state,
     LineAt thisAt,
     int thisStartPos,

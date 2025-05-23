@@ -31,7 +31,7 @@ int testGroups() {
         for(int j = 0; j < 2; ++j) {
             auto g = gs[j];
             auto gdata = data.groups[j];
-            if(g.start == -1) { continue; }
+            // if(g.start == -1) { continue; }
             if(g.start != gdata.start || g.end != gdata.end) {
                 std::cerr << "At match = \"" << matches[i] << "\":\n";
                 std::cerr << "group mismatch, desired = "
@@ -496,6 +496,13 @@ int main() {
         "([a-z]+)|([1-9]+)",
         "abc 123 a1",
         "abc", "123", "a", "1"
+    );
+    fail |= t.testAndLog<RegexLexer>();
+
+    t = LexerTestCase::create(
+        "([а-я]+)|([a-z]+)|([0-9]+)",
+        "abc ая 123 a1",
+        "abc", "ая", "123", "a", "1"
     );
     fail |= t.testAndLog<RegexLexer>();
 

@@ -110,12 +110,22 @@ using namespace dtl;
     ab|ba
     ^(abc)
 */
+
+RegexLexer::RegexLexer(const std::string& pat) {
+    createNode<StartNode>();
+
+    parsePattern(pat);
+}
+
 void RegexLexer::reprogram(const std::string& pat) {
     nodes.resize(1);
     err = nullptr;
     data = RegexData{};
 
     parsePattern(pat);
+
+    std::vector<Node*> path;
+    std::vector<int> groupsOnPath;
 }
 
 static void print(Node* n, int d, std::vector<Node*> traversed) {
@@ -125,7 +135,7 @@ static void print(Node* n, int d, std::vector<Node*> traversed) {
 
     for(int j = 0; j < d; ++j) { std::cerr << "        "; }
 
-    std::cerr << d << ' ' << NameVisitor::get(*n) << '\n';
+    std::cerr << d << ' ' << NameVisitor::get(*n) << ' ' << n << '\n';
     traversed.push_back(n);
     for(const auto child: n->children) {
         print(child, d+1, traversed);
@@ -134,6 +144,17 @@ static void print(Node* n, int d, std::vector<Node*> traversed) {
 }
 
 int findLastSuperiorTo(dtl::Node& node, const dtl::Children_t& stack);
+int findLastSuperiorOnStack(int pres, const dtl::Children_t& stack, IsSpecialVisitor& checker);
+
+template<typename SupType>
+int isSuperiorNodeOfType(int pres, const dtl::Children_t& stack) {
+    IsSpecialVisitor v;
+    const int supAt = 
+        findLastSuperiorOnStack(OrNode::Presedence, stack, v);
+
+    if(isNode<SupType>(*stack[supAt])) { return supAt; }
+    return -1;
+}
 
 void RegexLexer::appendNode(dtl::Children_t& stack, dtl::Node* newNode, bool addEnd) {
     const int supAdapterAt = findLastSuperiorTo(*newNode, stack);
@@ -275,7 +296,15 @@ void RegexLexer::parsePattern(const std::string& pat) {
             isEscaped = false;
         }
         else switch(unit[0]) {
-        case '|': newNode = createNode<OrNode>(); break;
+        case '|': {
+            const int supOrAt = 
+                isSuperiorNodeOfType<OrNode>(OrNode::Presedence, stack);
+            if(supOrAt != -1) {
+                adaptStackToSiblingOr(stack, supOrAt);
+                continue;
+            }
+            newNode = createNode<OrNode>();
+        } break;
         case '(': {
             const int gid = this->freeGroupId;
             this->freeGroupId++;
@@ -326,17 +355,11 @@ void RegexLexer::parsePattern(const std::string& pat) {
 #endif
 }
 
-RegexLexer::RegexLexer(const std::string& pat) {
-    nodes.push_back(std::make_unique<StartNode>());
-    parsePattern(pat);
-}
-
 // returns true if:
 //      a node with free children is found 
 //      or there's some string to parse yet
 // otherwise, returns false
 static bool popUntilFreeChildren(RegexData& data, bool hasLastUnitFetched) {
-    // TODO: look at the head of file 
     if(hasLastUnitFetched) { data.returnUnit(); }
 
     while(data.stack.size() > 1) {
@@ -344,6 +367,8 @@ static bool popUntilFreeChildren(RegexData& data, bool hasLastUnitFetched) {
         if(back.firstUnprocessedChild < back.node->children.size()) {
             return true;
         }
+
+        back.node->revert(data);
         if(back.node->needsUnit) {
             data.returnUnit();
         }
@@ -414,6 +439,7 @@ bool RegexLexer::getToken(const char** start, const char** end, RegexData& data)
 
         // if not satisfied, revert
         if(next == -1) {
+            cur->revert(data);
             curParent.firstUnprocessedChild += 1;
             if(!popUntilFreeChildren(data, cur->needsUnit)) {
                 return false;
@@ -453,7 +479,39 @@ bool RegexLexer::getToken(std::string& out, RegexData& data) const {
     return true;
 }
 
+void RegexLexer::adaptStackToSiblingOr(Children_t& stack, int sibAt) {
+    assert(isSuperiorNodeOfType<OrNode>(OrNode::Presedence, stack) != -1);
+    appendNode(stack, createNode<EndNode>(), true);
+    stack.resize(sibAt + 1);
+}
 
+int findLastSuperiorOnStack(int pres, const dtl::Children_t& stack, 
+    IsSpecialVisitor& checker
+) {
+    int i = stack.size() - 1;
+
+    for(; i >= 0; --i) {
+        stack[i]->acceptVisitor(checker);
+        if(!checker.is && stack[i]->pres >= pres) {
+            break;
+        }
+        checker.is = false;
+    }
+    return i;
+}
+
+int findLastSuperiorTo(dtl::Node& node, const dtl::Children_t& stack) {
+    int i = stack.size() - 1;
+    IsSpecialVisitor checker;
+    node.acceptVisitor(checker);
+
+    if(checker.is || !node.skipSpecials) { return stack.size() - 1; }
+    checker.is = false;
+
+    return findLastSuperiorOnStack(node.pres, stack, checker);
+}
+
+/*
 int findLastSuperiorTo(dtl::Node& node, const dtl::Children_t& stack) {
     int i = stack.size() - 1;
     IsSpecialVisitor checker;
@@ -471,6 +529,7 @@ int findLastSuperiorTo(dtl::Node& node, const dtl::Children_t& stack) {
     }
     return i;
 }
+*/
 
 /***********************************  NODES  *******************************/
 
@@ -595,10 +654,8 @@ void OrNode::adaptChild(Children_t &stack, Node &node, int at) {
         return;
     }
 
-    if(isNode<OrNode>(node) != nullptr) {
-        stack.resize(at);
-        return;
-    }
+    assert(isNode<OrNode>(node) == nullptr
+        && "sibling or nodes must be hanlded in adaptStackToSiblingOr()");
     
     stack.resize(at);
     stack.push_back(&node);
@@ -649,6 +706,20 @@ int GroupNode::satisfies(RegexData& data) const {
         data.groups[groupId].start = data.pos;
     }
     return 0; 
+}
+
+void GroupNode::revert(RegexData& data) const {
+    assert(groupId < static_cast<int>(data.groups.size()));
+
+    if(!capture) { return; }
+
+    assert(groupId >= 0 && "only not capturing group may have id < 0");
+
+    if(isEnd()) {
+        data.groups[groupId].end = -1;
+    } else {
+        data.groups[groupId].start = -1;
+    }
 }
 
 void GroupNode::lowerPresedence() {
@@ -788,7 +859,7 @@ AtStartNode::AtStartNode() {}
 
 int AtStartNode::satisfies(RegexData& data) const { 
     // matches both start and end (where end is line or file end)
-    return -1 * !(data.at != RegexData::LINE_AT_MID);
+    return -1 * (data.at == RegexData::LINE_AT_MID);
 }
 
 void AtStartNode::adaptChild(Children_t &stack, Node &node, int at) {
@@ -884,21 +955,63 @@ struct GenBodyVisitor: INodeVisitor {
         "return 0;\n}\n\n";
     }
     void visit(StartNode& _) override {
+        // pass, generated outside
     }
-    void visit(GroupNode& _) override {
-        // pass
+    void visit(GroupNode& n) override {
+        if(n.groupId < 0) { return; }
+
+        cur += "groups[2*";
+        cur += std::to_string(n.groupId);
+        if(n.isEnd()) {
+            cur += " + 1";
+        }
+        cur += "] = thisPos;\n";
     }
     void visit(OrNode& _) override {
         // pass
     }
     void visit(RepeatNode& _) override {
-        
+        // TODO
     }
-    void visit(EndNode& _) override {}
-    void visit(AtStartNode& _) override {}
-    void visit(AtEndNode& _) override {}
-    void visit(RangeNode& _) override {}
-    void visit(FailNode& _) override {}
+    void visit(EndNode& _) override {
+        // pass, generated outside
+    }
+    void visit(AtStartNode& _) override {
+        cur += "if(thisAt == LINE_AT_MID) { return 0; }\n";
+    }
+
+    void visit(AtEndNode& _) override {
+        cur += "if(thisAt != LINE_AT_EOF && thisAt != LINE_AT_END) {\n"
+        "return 0;\n"
+        "}\n";
+    }
+    void visit(RangeNode& n) override {
+        assert(n.startlen == n.endlen);
+
+        cur += "const int thisLen = ";
+        cur += std::to_string(n.startlen);
+        cur += ";\n";
+
+        cur += "const unsigned char start[] = {";
+        for(int i = 0; i < n.startlen; ++i) {
+            cur += std::to_string((unsigned char)n.start[i]);
+            cur += ", ";
+        }
+        cur += "};\nconst unsigned char end[] = {";
+        for(int i = 0; i < n.endlen; ++i) {
+            cur += std::to_string((unsigned char)n.end[i]);
+            cur += ", ";
+        }
+        cur += "};\n";
+
+        cur += "if(*ulen != thisLen\n"
+        "|| memcmp(unit, start, sizeof(start)) < 0\n"
+        "|| memcmp(end, unit, sizeof(end)) < 0) {\n"
+        "return 0;\n}\n";
+    }
+    void visit(FailNode& _) override {
+        cur += "return 0;\n";
+    }
 
     static std::string get(dtl::Node& n) {
         GenBodyVisitor v;
@@ -1003,7 +1116,7 @@ private:
         }
 
         if(n.children.size() == 0) {
-            assert(isNode<EndNode>(n) && "end node must have 0 children");
+            assert(isNode<EndNode>(n) && "only end node must have 0 children");
             genEndBody(n);
             return;
         }
@@ -1029,8 +1142,26 @@ private:
         for(Node* child: n.children) {
             out += genChildCallDefArgs(*child, true, 1);
         }
+
+        out += genRevertChapter(n);
+
         out += "return 0;\n";
         out += "} break;\n"; // switch
+    }
+
+    std::string genRevertChapter(dtl::Node& n) {
+        std::string out;
+
+        if(GroupNode* g = isNode<GroupNode>(n); g && g->groupId >= 0) {
+            out += "groups[2*";
+            out += std::to_string(g->groupId);
+            if(g->isEnd()) {
+                out += " + 1";
+            }
+            out += "] = -1;\n";
+        }
+
+        return out;
     }
 
     void genStartBody(dtl::Node& n) {
